@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: builder-system
+  labels:
+    app: builder
+    kubernetes.io/metadata.name: builder-system

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}k3s App Builder{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <a href="/" class="nav-brand">k3s App Builder</a>
+    <div class="nav-links">
+      <a href="/" class="nav-link">Apps</a>
+      <a href="/new" class="nav-link btn-primary">+ New App</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <small>k3s App Builder &mdash; Describe &rarr; Preview &rarr; Publish</small>
+  </footer>
+</body>
+</html>

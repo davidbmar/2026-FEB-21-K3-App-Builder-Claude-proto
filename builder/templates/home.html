@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Apps — k3s App Builder{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Your Apps</h1>
+  <a href="/new" class="btn btn-primary">+ New App</a>
+</div>
+
+{% if apps %}
+<div class="app-grid">
+  {% for app in apps %}
+  <div class="app-card">
+    <div class="app-card-header">
+      <h2 class="app-name">{{ app.app_name }}</h2>
+      <span class="badge badge-{{ app.status }}">{{ app.status }}</span>
+    </div>
+
+    <p class="app-desc">{{ app.description or "No description" }}</p>
+    <p class="app-template"><strong>Template:</strong> {{ app.template }}</p>
+
+    <div class="app-status-row">
+      {% set preview = app.k8s.get("preview", {}) %}
+      {% set prod = app.k8s.get("prod", {}) %}
+      <span class="env-badge env-preview">
+        Preview: <strong>{{ preview.get("phase", "—") }}</strong>
+        {% if preview.get("restarts", 0) > 0 %}
+          <span class="restart-count">({{ preview.restarts }} restarts)</span>
+        {% endif %}
+      </span>
+      <span class="env-badge env-prod">
+        Prod: <strong>{{ prod.get("phase", "—") }}</strong>
+      </span>
+    </div>
+
+    <div class="app-urls">
+      {% if app.preview_version %}
+      <a href="{{ app.preview_url }}" target="_blank" class="url-link">Preview ↗</a>
+      {% endif %}
+      {% if app.prod_version %}
+      <a href="{{ app.prod_url }}" target="_blank" class="url-link">Production ↗</a>
+      {% endif %}
+    </div>
+
+    <div class="app-actions">
+      <a href="/app/{{ app.app_name }}" class="btn btn-secondary">Manage</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="empty-state">
+  <h2>No apps yet</h2>
+  <p>Create your first app to get started.</p>
+  <a href="/new" class="btn btn-primary">+ New App</a>
+</div>
+{% endif %}
+{% endblock %}

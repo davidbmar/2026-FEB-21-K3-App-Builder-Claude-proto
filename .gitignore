@@ -1,0 +1,39 @@
+# Secrets — never commit
+k8s/bootstrap/builder-secret.yaml
+*.env
+.env.*
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# App registry (runtime state — not committed)
+/opt/builder/registry.json
+
+# Node
+node_modules/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Docker
+.dockerignore
+
+# k3s / kubectl
+kubeconfig
+*.yaml.bak

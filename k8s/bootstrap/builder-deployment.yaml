@@ -1,0 +1,169 @@
+---
+# PersistentVolume: builder app data (registry.json + git repos)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: builder-data-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /opt/builder-data
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: builder-data-pvc
+  namespace: builder-system
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  volumeName: builder-data-pv
+---
+# PersistentVolume: git repos
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: git-repos-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /var/git/apps
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: git-repos-pvc
+  namespace: builder-system
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  volumeName: git-repos-pv
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: builder-ui
+  namespace: builder-system
+  labels:
+    app: builder-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: builder-ui
+  template:
+    metadata:
+      labels:
+        app: builder-ui
+    spec:
+      serviceAccountName: builder-controller
+
+      # Mount host docker socket so builder can run docker build/push
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      - name: kubeconfig
+        hostPath:
+          path: /etc/rancher/k3s/k3s.yaml
+          type: File
+      - name: builder-data
+        persistentVolumeClaim:
+          claimName: builder-data-pvc
+      - name: git-repos
+        persistentVolumeClaim:
+          claimName: git-repos-pvc
+
+      containers:
+      - name: builder-ui
+        image: localhost:5050/builder-ui:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: builder-secrets
+              key: ANTHROPIC_API_KEY
+        - name: SERVER_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: REGISTRY_HOST
+          value: "localhost:5050"
+        - name: GIT_BASE
+          value: "/var/git/apps"
+        - name: REGISTRY_FILE
+          value: "/opt/builder/registry.json"
+        - name: KUBECONFIG
+          value: "/etc/rancher/k3s/k3s.yaml"
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+        - name: kubeconfig
+          mountPath: /etc/rancher/k3s/k3s.yaml
+          readOnly: true
+        - name: builder-data
+          mountPath: /opt/builder
+        - name: git-repos
+          mountPath: /var/git/apps
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: builder-ui-svc
+  namespace: builder-system
+  labels:
+    app: builder-ui
+spec:
+  selector:
+    app: builder-ui
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: builder-ui-ingress
+  namespace: builder-system
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+  - host: "builder.SERVER_IP_PLACEHOLDER.nip.io"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: builder-ui-svc
+            port:
+              number: 8000

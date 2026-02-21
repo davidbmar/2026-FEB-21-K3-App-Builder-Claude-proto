@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ app_name }}-{{ env }}
+  namespace: app-{{ app_name }}
+  labels:
+    app: {{ app_name }}
+    env: {{ env }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ app_name }}
+      env: {{ env }}
+  template:
+    metadata:
+      labels:
+        app: {{ app_name }}
+        env: {{ env }}
+        version: "{{ version }}"
+    spec:
+      containers:
+      - name: app
+        image: {{ registry_host }}/{{ app_name }}:{{ version }}
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: {{ app_name }}-env
+            optional: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ app_name }}-{{ env }}-svc
+  namespace: app-{{ app_name }}
+  labels:
+    app: {{ app_name }}
+    env: {{ env }}
+spec:
+  selector:
+    app: {{ app_name }}
+    env: {{ env }}
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ app_name }}-{{ env }}-ingress
+  namespace: app-{{ app_name }}
+  labels:
+    app: {{ app_name }}
+    env: {{ env }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+  - host: "{{ app_name }}{% if env == 'preview' %}-preview{% endif %}.{{ server_ip }}.nip.io"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ app_name }}-{{ env }}-svc
+            port:
+              number: 8080

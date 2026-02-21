@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}New App — k3s App Builder{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Create New App</h1>
+</div>
+
+<form action="/create" method="post" class="form-card">
+  <div class="form-group">
+    <label for="app_name">App Name</label>
+    <input
+      type="text"
+      id="app_name"
+      name="app_name"
+      required
+      pattern="[a-z0-9\-]+"
+      placeholder="my-app"
+      class="form-input"
+    >
+    <small class="form-hint">Lowercase letters, numbers, and hyphens only.</small>
+  </div>
+
+  <div class="form-group">
+    <label>Template</label>
+    <div class="template-grid">
+      {% for tmpl in templates_list %}
+      <label class="template-card">
+        <input type="radio" name="template" value="{{ tmpl }}" {% if loop.first %}checked{% endif %}>
+        <div class="template-info">
+          <strong>{{ tmpl }}</strong>
+          <small>
+            {% if tmpl == "static-site" %}HTML/CSS/JS served by nginx{% endif %}
+            {% if tmpl == "simple-api" %}FastAPI Python REST API{% endif %}
+            {% if tmpl == "webhook" %}FastAPI with HMAC webhook verification{% endif %}
+            {% if tmpl == "scheduled-job" %}CronJob that runs on a schedule{% endif %}
+          </small>
+        </div>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="description">Description (optional)</label>
+    <textarea
+      id="description"
+      name="description"
+      rows="3"
+      placeholder="Describe what this app does..."
+      class="form-input"
+    ></textarea>
+    <small class="form-hint">This helps Claude understand your app's purpose.</small>
+  </div>
+
+  <div class="form-actions">
+    <a href="/" class="btn btn-secondary">Cancel</a>
+    <button type="submit" class="btn btn-primary">Create App</button>
+  </div>
+</form>
+{% endblock %}

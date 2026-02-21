@@ -1,0 +1,65 @@
+---
+# ServiceAccount for the Builder UI
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: builder-controller
+  namespace: builder-system
+---
+# ClusterRole: read all namespaces, full control over app-* resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: builder-app-manager
+rules:
+# Namespace management (create/delete app-* namespaces)
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+# Full access to core resources within app namespaces
+- apiGroups: [""]
+  resources:
+    - pods
+    - pods/log
+    - services
+    - configmaps
+    - secrets
+    - resourcequotas
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Deployments + rollouts
+- apiGroups: ["apps"]
+  resources:
+    - deployments
+    - replicasets
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Ingress routing
+- apiGroups: ["networking.k8s.io"]
+  resources:
+    - ingresses
+    - networkpolicies
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# CronJobs for scheduled-job template
+- apiGroups: ["batch"]
+  resources:
+    - cronjobs
+    - jobs
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# RBAC: create RoleBindings in app namespaces
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources:
+    - rolebindings
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# ClusterRoleBinding: bind the SA to the ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: builder-controller-binding
+subjects:
+- kind: ServiceAccount
+  name: builder-controller
+  namespace: builder-system
+roleRef:
+  kind: ClusterRole
+  name: builder-app-manager
+  apiGroup: rbac.authorization.k8s.io

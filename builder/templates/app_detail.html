@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+{% block title %}{{ app.app_name }} — k3s App Builder{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>{{ app.app_name }}</h1>
+    <span class="badge badge-{{ app.status }}">{{ app.status }}</span>
+    <span class="badge badge-template">{{ app.template }}</span>
+  </div>
+  <div class="header-actions">
+    <button
+      class="btn btn-danger"
+      hx-delete="/app/{{ app.app_name }}"
+      hx-confirm="Delete {{ app.app_name }} and all its resources?"
+      hx-target="body"
+      hx-push-url="/"
+    >Delete App</button>
+  </div>
+</div>
+
+<!-- Status Bar -->
+<div class="status-bar">
+  <div class="status-item">
+    <span class="status-label">Preview</span>
+    <span id="preview-phase" class="badge badge-phase">{{ k8s_status.get("preview", {}).get("phase", "—") }}</span>
+    {% if app.preview_version %}
+    <a href="{{ app.preview_url }}" target="_blank" class="url-link">{{ app.preview_url }} ↗</a>
+    <small class="version-tag">v{{ app.preview_version }}</small>
+    {% endif %}
+  </div>
+  <div class="status-item">
+    <span class="status-label">Production</span>
+    <span id="prod-phase" class="badge badge-phase">{{ k8s_status.get("prod", {}).get("phase", "—") }}</span>
+    {% if app.prod_version %}
+    <a href="{{ app.prod_url }}" target="_blank" class="url-link">{{ app.prod_url }} ↗</a>
+    <small class="version-tag">v{{ app.prod_version }}</small>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Two-column layout -->
+<div class="detail-grid">
+
+  <!-- Left: Claude Chat + Controls -->
+  <div class="detail-left">
+
+    <section class="panel">
+      <h2 class="panel-title">Generate Code with Claude</h2>
+      <form id="generate-form">
+        <div class="form-group">
+          <textarea
+            id="generate-description"
+            name="description"
+            rows="4"
+            placeholder="Describe what you want Claude to build or change..."
+            class="form-input"
+          ></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary" id="generate-btn">Generate</button>
+      </form>
+      <div id="generate-output" class="output-box" style="display:none"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Build &amp; Deploy</h2>
+      <div class="action-row">
+        <button class="btn btn-secondary" id="build-btn" onclick="startBuild()">
+          Build &amp; Deploy Preview
+        </button>
+        <button
+          class="btn btn-success"
+          onclick="publishApp()"
+          {% if not app.preview_version %}disabled{% endif %}
+        >Publish to Production</button>
+        <button
+          class="btn btn-warning"
+          onclick="rollbackApp()"
+          {% if not app.prod_version %}disabled{% endif %}
+        >Rollback</button>
+      </div>
+      <div id="build-output" class="output-box" style="display:none"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Pod Logs</h2>
+      <div class="action-row">
+        <button class="btn btn-secondary btn-sm" onclick="startLogs('preview')">Preview Logs</button>
+        <button class="btn btn-secondary btn-sm" onclick="startLogs('prod')">Prod Logs</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Clear</button>
+      </div>
+      <div id="log-output" class="output-box log-box"></div>
+    </section>
+
+  </div>
+
+  <!-- Right: File Browser -->
+  <div class="detail-right">
+    <section class="panel">
+      <h2 class="panel-title">Workspace Files</h2>
+      {% if files %}
+      <div class="file-list">
+        {% for filename, content in files.items() %}
+        <details class="file-item">
+          <summary class="file-name">{{ filename }}</summary>
+          <pre class="file-content"><code>{{ content | e }}</code></pre>
+        </details>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty-note">No files yet. Use Claude to generate code.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Claude CLI Session</h2>
+      <p class="panel-desc">Launch an interactive Claude session in the workspace for advanced editing.</p>
+      <button class="btn btn-secondary" onclick="launchClaudeSession()">Launch Claude Session</button>
+      <div id="session-info" class="info-box" style="display:none"></div>
+    </section>
+  </div>
+
+</div>
+
+<script>
+const appName = {{ app.app_name | tojson }};
+
+// --- Generate ---
+document.getElementById("generate-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const desc = document.getElementById("generate-description").value.trim();
+  if (!desc) return;
+
+  const output = document.getElementById("generate-output");
+  const btn = document.getElementById("generate-btn");
+  output.style.display = "block";
+  output.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Generating...";
+
+  const formData = new FormData();
+  formData.append("description", desc);
+
+  const resp = await fetch(`/app/${appName}/generate`, { method: "POST", body: formData });
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        const msg = JSON.parse(line.slice(6));
+        if (msg.chunk) {
+          output.textContent += msg.chunk.replace(/\\n/g, "\n").replace(/\\r/g, "");
+          output.scrollTop = output.scrollHeight;
+        }
+        if (msg.done) {
+          btn.disabled = false;
+          btn.textContent = "Generate";
+          output.textContent += `\n\n--- Done. Files updated: ${msg.files.join(", ")} ---`;
+          setTimeout(() => location.reload(), 2000);
+        }
+        if (msg.error) {
+          output.textContent += `\nERROR: ${msg.error}`;
+          btn.disabled = false;
+          btn.textContent = "Generate";
+        }
+      }
+    }
+  }
+});
+
+// --- Build ---
+async function startBuild() {
+  const output = document.getElementById("build-output");
+  const btn = document.getElementById("build-btn");
+  output.style.display = "block";
+  output.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Building...";
+
+  const resp = await fetch(`/app/${appName}/build`, { method: "POST" });
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        const msg = JSON.parse(line.slice(6));
+        if (msg.log) {
+          output.textContent += msg.log;
+          output.scrollTop = output.scrollHeight;
+        }
+        if (msg.done) {
+          btn.disabled = false;
+          btn.textContent = "Build & Deploy Preview";
+          output.textContent += `\n--- Build complete: ${msg.version} ---\nPreview: ${msg.preview_url}`;
+          setTimeout(() => location.reload(), 2000);
+        }
+        if (msg.error) {
+          output.textContent += `\nERROR: ${msg.error}`;
+          btn.disabled = false;
+          btn.textContent = "Build & Deploy Preview";
+        }
+      }
+    }
+  }
+}
+
+// --- Publish ---
+async function publishApp() {
+  if (!confirm("Publish preview to production?")) return;
+  const resp = await fetch(`/app/${appName}/publish`, { method: "POST" });
+  const data = await resp.json();
+  if (data.ok) {
+    alert(`Published! Production: ${data.prod_url}`);
+    location.reload();
+  } else {
+    alert("Publish failed: " + (data.detail || JSON.stringify(data)));
+  }
+}
+
+// --- Rollback ---
+async function rollbackApp() {
+  if (!confirm("Roll back production to the previous version?")) return;
+  const resp = await fetch(`/app/${appName}/rollback`, { method: "POST" });
+  const data = await resp.json();
+  alert(data.ok ? "Rollback complete" : "Rollback failed");
+  location.reload();
+}
+
+// --- Logs ---
+let logController = null;
+async function startLogs(env) {
+  if (logController) logController.abort();
+  logController = new AbortController();
+  const output = document.getElementById("log-output");
+  output.textContent = `=== ${env} logs ===\n`;
+
+  const resp = await fetch(`/app/${appName}/logs?env=${env}`, { signal: logController.signal });
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const msg = JSON.parse(line.slice(6));
+          if (msg.log) {
+            output.textContent += msg.log;
+            output.scrollTop = output.scrollHeight;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") output.textContent += `\nError: ${e.message}`;
+  }
+}
+
+function clearLogs() {
+  if (logController) logController.abort();
+  document.getElementById("log-output").textContent = "";
+}
+
+// --- Claude Session ---
+async function launchClaudeSession() {
+  const resp = await fetch(`/app/${appName}/claude-session`, { method: "POST" });
+  const data = await resp.json();
+  const info = document.getElementById("session-info");
+  info.style.display = "block";
+  info.textContent = data.message || JSON.stringify(data);
+}
+
+// --- Status polling ---
+setInterval(async () => {
+  const resp = await fetch(`/app/${appName}/status`);
+  const data = await resp.json();
+  document.getElementById("preview-phase").textContent = data.preview?.phase || "—";
+  document.getElementById("prod-phase").textContent = data.prod?.phase || "—";
+}, 10000);
+</script>
+{% endblock %}
