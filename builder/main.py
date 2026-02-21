@@ -171,11 +171,18 @@ async def generate_code(name: str, description: str = Form(...)):
 
             def run_stream():
                 try:
+                    full = ""
                     for chunk in claude_ops.generate_code_stream(
                         name, template, description, current_files
                     ):
+                        full += chunk
                         asyncio.run_coroutine_threadsafe(queue.put(("chunk", chunk)), loop)
-                    asyncio.run_coroutine_threadsafe(queue.put(("done", None)), loop)
+                    # Write files in the thread so it survives client disconnect
+                    files = claude_ops._extract_files(full)
+                    if files:
+                        build_ops.write_files_to_workspace(name, files)
+                    asyncio.run_coroutine_threadsafe(
+                        queue.put(("done", list(files.keys()))), loop)
                 except Exception as e:
                     asyncio.run_coroutine_threadsafe(queue.put(("error", str(e))), loop)
 
@@ -188,14 +195,8 @@ async def generate_code(name: str, description: str = Form(...)):
                     escaped = data.replace("\n", "\\n").replace("\r", "\\r")
                     yield f"data: {json.dumps({'chunk': escaped})}\n\n"
                 elif event_type == "done":
-                    # Extract and commit files
-                    files = claude_ops._extract_files(full_text)
-                    if files:
-                        build_ops.write_files_to_workspace(name, files)
-                        file_list = list(files.keys())
-                    else:
-                        file_list = []
-                    yield f"data: {json.dumps({'done': True, 'files': file_list})}\n\n"
+                    # files already extracted and written in the thread
+                    yield f"data: {json.dumps({'done': True, 'files': data or []})}\n\n"
                     break
                 elif event_type == "error":
                     yield f"data: {json.dumps({'error': data})}\n\n"
@@ -221,12 +222,16 @@ async def build_app(name: str):
                 for line in build_ops.build_and_push(name, version):
                     asyncio.run_coroutine_threadsafe(queue.put(("log", line)), loop)
 
-                # Deploy to preview
                 asyncio.run_coroutine_threadsafe(queue.put(("log", "=== Deploying to preview ===\n")), loop)
                 k8s_ops.deploy_app(name, "preview", version)
                 ok = k8s_ops.rollout_status(name, "preview")
 
                 if ok:
+                    # Save registry HERE in the thread — survives client disconnect
+                    reg = _load_registry()
+                    reg[name]["preview_version"] = version
+                    reg[name]["status"] = "preview"
+                    _save_registry(reg)
                     asyncio.run_coroutine_threadsafe(queue.put(("done", version)), loop)
                 else:
                     asyncio.run_coroutine_threadsafe(queue.put(("error", "Rollout timed out")), loop)
@@ -241,11 +246,6 @@ async def build_app(name: str):
                 if event_type == "log":
                     yield f"data: {json.dumps({'log': data})}\n\n"
                 elif event_type == "done":
-                    # Update registry
-                    registry = _load_registry()
-                    registry[name]["preview_version"] = data
-                    registry[name]["status"] = "preview"
-                    _save_registry(registry)
                     preview_url = _app_url(name, "preview")
                     yield f"data: {json.dumps({'done': True, 'version': data, 'preview_url': preview_url})}\n\n"
                     break
