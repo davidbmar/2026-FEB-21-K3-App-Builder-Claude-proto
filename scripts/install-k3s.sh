@@ -29,8 +29,18 @@ echo "=== Verifying installation ==="
 kubectl get nodes
 kubectl get pods -n kube-system
 
-SERVER_IP=$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null \
-  || hostname -I | awk '{print $1}')
+_TOKEN=$(curl -sf --connect-timeout 2 -X PUT \
+  "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+if [ -n "$_TOKEN" ]; then
+  SERVER_IP=$(curl -sf -H "X-aws-ec2-metadata-token: $_TOKEN" \
+    http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+fi
+if [ -z "${SERVER_IP:-}" ]; then
+  SERVER_IP=$(curl -sf https://checkip.amazonaws.com 2>/dev/null \
+    || curl -sf https://api.ipify.org 2>/dev/null \
+    || hostname -I | awk '{print $1}')
+fi
 echo ""
 echo "=== k3s installed! ==="
 echo "Node:       $(kubectl get nodes --no-headers | awk '{print $1, $2}')"

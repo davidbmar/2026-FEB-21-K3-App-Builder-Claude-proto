@@ -6,9 +6,24 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REGISTRY="localhost:5050"
 
-# Detect server IP (EC2 metadata → fallback to primary IP)
-SERVER_IP=$(curl -sf --connect-timeout 3 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null \
-  || hostname -I | awk '{print $1}')
+# Detect PUBLIC IP — tries IMDSv2 (EC2 default), IMDSv1, then checkip
+_TOKEN=$(curl -sf --connect-timeout 2 -X PUT \
+  "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+if [ -n "$_TOKEN" ]; then
+  SERVER_IP=$(curl -sf --connect-timeout 2 \
+    -H "X-aws-ec2-metadata-token: $_TOKEN" \
+    http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+fi
+if [ -z "${SERVER_IP:-}" ]; then
+  SERVER_IP=$(curl -sf --connect-timeout 3 \
+    http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+fi
+if [ -z "${SERVER_IP:-}" ]; then
+  SERVER_IP=$(curl -sf --connect-timeout 5 https://checkip.amazonaws.com 2>/dev/null \
+    || curl -sf --connect-timeout 5 https://api.ipify.org 2>/dev/null \
+    || hostname -I | awk '{print $1}')
+fi
 echo "Server IP: ${SERVER_IP}"
 echo "Builder URL will be: http://builder.${SERVER_IP}.nip.io/"
 echo ""

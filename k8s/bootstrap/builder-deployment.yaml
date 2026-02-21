@@ -70,9 +70,7 @@ spec:
         - name: K8S_TEMPLATES_DIR
           value: "/app/k8s_templates"
         - name: SERVER_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.hostIP
+          value: "SERVER_IP_PLACEHOLDER"
         volumeMounts:
         - name: docker-sock
           mountPath: /var/run/docker.sock
