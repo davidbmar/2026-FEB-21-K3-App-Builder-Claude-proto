@@ -1,60 +1,4 @@
 ---
-# PersistentVolume: builder app data (registry.json + git repos)
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: builder-data-pv
-spec:
-  capacity:
-    storage: 10Gi
-  accessModes:
-  - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: /opt/builder-data
-    type: DirectoryOrCreate
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: builder-data-pvc
-  namespace: builder-system
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
-  volumeName: builder-data-pv
----
-# PersistentVolume: git repos
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: git-repos-pv
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-  - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: /var/git/apps
-    type: DirectoryOrCreate
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: git-repos-pvc
-  namespace: builder-system
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
-  volumeName: git-repos-pv
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -74,22 +18,32 @@ spec:
     spec:
       serviceAccountName: builder-controller
 
-      # Mount host docker socket so builder can run docker build/push
       volumes:
+      # Docker socket so the builder can run docker build/push on the host
       - name: docker-sock
         hostPath:
           path: /var/run/docker.sock
           type: Socket
-      - name: kubeconfig
-        hostPath:
-          path: /etc/rancher/k3s/k3s.yaml
-          type: File
+      # Persistent builder data (registry.json lives here)
       - name: builder-data
-        persistentVolumeClaim:
-          claimName: builder-data-pvc
+        hostPath:
+          path: /opt/builder-data
+          type: DirectoryOrCreate
+      # Git repos + workspaces
       - name: git-repos
-        persistentVolumeClaim:
-          claimName: git-repos-pvc
+        hostPath:
+          path: /var/git/apps
+          type: DirectoryOrCreate
+      # App templates (read-only from the project repo)
+      - name: app-templates
+        hostPath:
+          path: /home/ubuntu/2026-FEB-21-K3-App-Builder-Claude-proto/app_templates
+          type: Directory
+      # k8s Jinja2 manifest templates
+      - name: k8s-templates
+        hostPath:
+          path: /home/ubuntu/2026-FEB-21-K3-App-Builder-Claude-proto/k8s/templates
+          type: Directory
 
       containers:
       - name: builder-ui
@@ -103,28 +57,35 @@ spec:
             secretKeyRef:
               name: builder-secrets
               key: ANTHROPIC_API_KEY
-        - name: SERVER_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.hostIP
+        # Standard kubectl in the pod uses the ServiceAccount token automatically.
+        # No KUBECONFIG needed — in-cluster config is used by default.
         - name: REGISTRY_HOST
           value: "localhost:5050"
         - name: GIT_BASE
           value: "/var/git/apps"
         - name: REGISTRY_FILE
           value: "/opt/builder/registry.json"
-        - name: KUBECONFIG
-          value: "/etc/rancher/k3s/k3s.yaml"
+        - name: APP_TEMPLATES_DIR
+          value: "/app/app_templates"
+        - name: K8S_TEMPLATES_DIR
+          value: "/app/k8s_templates"
+        - name: SERVER_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
         volumeMounts:
         - name: docker-sock
           mountPath: /var/run/docker.sock
-        - name: kubeconfig
-          mountPath: /etc/rancher/k3s/k3s.yaml
-          readOnly: true
         - name: builder-data
           mountPath: /opt/builder
         - name: git-repos
           mountPath: /var/git/apps
+        - name: app-templates
+          mountPath: /app/app_templates
+          readOnly: true
+        - name: k8s-templates
+          mountPath: /app/k8s_templates
+          readOnly: true
         resources:
           requests:
             cpu: "100m"

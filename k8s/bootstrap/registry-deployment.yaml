@@ -1,32 +1,4 @@
 ---
-# PersistentVolume for registry storage
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: registry-pv
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-  - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  hostPath:
-    path: /var/lib/registry
-    type: DirectoryOrCreate
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: registry-pvc
-  namespace: builder-system
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
-  volumeName: registry-pv
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -64,8 +36,9 @@ spec:
             memory: "256Mi"
       volumes:
       - name: registry-data
-        persistentVolumeClaim:
-          claimName: registry-pvc
+        hostPath:
+          path: /var/lib/registry
+          type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
@@ -83,7 +56,7 @@ spec:
     protocol: TCP
   type: ClusterIP
 ---
-# NodePort service for host-level access (docker push from host)
+# NodePort: allows docker push from the host node (localhost:30500)
 apiVersion: v1
 kind: Service
 metadata:

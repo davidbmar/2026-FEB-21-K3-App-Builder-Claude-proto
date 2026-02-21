@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Generator, Optional
 from jinja2 import Environment, FileSystemLoader
 
-MANIFESTS_DIR = Path(__file__).parent.parent / "k8s" / "templates"
+_default_manifests = Path(__file__).parent.parent / "k8s" / "templates"
+MANIFESTS_DIR = Path(os.environ.get("K8S_TEMPLATES_DIR", str(_default_manifests)))
 REGISTRY_HOST = os.environ.get("REGISTRY_HOST", "localhost:5050")
 SERVER_IP = os.environ.get("SERVER_IP", "127.0.0.1")
 
@@ -44,8 +45,9 @@ def _render(template_name: str, **ctx) -> str:
 
 def create_namespace(app_name: str) -> None:
     """Create app-<name> namespace with ResourceQuota and NetworkPolicy."""
-    yaml = _render("namespace.yaml.j2", app_name=app_name)
-    _kubectl(["apply", "-f", "-"], input_text=yaml)
+    for template in ("namespace.yaml.j2", "quota.yaml.j2", "networkpolicy.yaml.j2"):
+        yaml = _render(template, app_name=app_name)
+        _kubectl(["apply", "-f", "-"], input_text=yaml)
 
 
 def delete_namespace(app_name: str) -> None:

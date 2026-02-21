@@ -10,7 +10,10 @@ from typing import Generator
 
 GIT_BASE = os.environ.get("GIT_BASE", "/var/git/apps")
 REGISTRY_HOST = os.environ.get("REGISTRY_HOST", "localhost:5050")
-APP_TEMPLATES_DIR = Path(__file__).parent.parent / "app_templates"
+# In the k8s pod, app_templates is mounted at /app/app_templates.
+# Locally (dev), fall back to <repo>/app_templates relative to this file.
+_default_templates = Path(__file__).parent.parent / "app_templates"
+APP_TEMPLATES_DIR = Path(os.environ.get("APP_TEMPLATES_DIR", str(_default_templates)))
 
 
 class BuildError(Exception):
@@ -54,11 +57,11 @@ def scaffold_app(app_name: str, template: str) -> None:
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True)
 
-    # Clone bare repo into workspace
-    subprocess.run(
-        ["git", "clone", str(repo), str(workspace)],
-        check=True, capture_output=True,
-    )
+    # Init workspace as a new git repo pointing at the bare repo as origin
+    subprocess.run(["git", "-C", str(workspace), "init", "-b", "main"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin", str(repo)],
+                   check=True, capture_output=True)
 
     # Copy template files
     for src in template_dir.iterdir():
@@ -77,7 +80,9 @@ def scaffold_app(app_name: str, template: str) -> None:
         ["git", "-C", str(workspace), "commit", "-m", f"Scaffold {template} for {app_name}"],
         check=True, env=env, capture_output=True,
     )
-    subprocess.run(["git", "-C", str(workspace), "push", "origin", "main"], check=True, env=env, capture_output=True)
+    # Push to bare repo; -u sets tracking so subsequent pushes work
+    subprocess.run(["git", "-C", str(workspace), "push", "-u", "origin", "main"],
+                   check=True, env=env, capture_output=True)
 
 
 def write_files_to_workspace(app_name: str, files: dict[str, str]) -> None:
@@ -107,21 +112,29 @@ def write_files_to_workspace(app_name: str, files: dict[str, str]) -> None:
             check=True, env=env, capture_output=True,
         )
         subprocess.run(
-            ["git", "-C", str(workspace), "push", "origin", "main"],
+            ["git", "-C", str(workspace), "push", "-u", "origin", "main"],
             check=True, env=env, capture_output=True,
         )
 
 
 def checkout_workspace(app_name: str) -> None:
-    """Force-checkout HEAD from the bare repo into the workspace."""
+    """Ensure the workspace is up to date with the bare repo HEAD."""
     workspace = Path(GIT_BASE) / f"{app_name}-workspace"
     repo = Path(GIT_BASE) / f"{app_name}.git"
-    workspace.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "--work-tree", str(workspace), "--git-dir", str(repo),
-         "checkout", "-f", "HEAD"],
-        check=True, capture_output=True,
-    )
+
+    if not workspace.exists():
+        # Workspace missing — recreate it
+        workspace.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(workspace), "init", "-b", "main"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(workspace), "remote", "add", "origin", str(repo)],
+                       check=True, capture_output=True)
+
+    # Fetch and hard-reset to origin/main
+    subprocess.run(["git", "-C", str(workspace), "fetch", "origin"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(workspace), "reset", "--hard", "origin/main"],
+                   check=True, capture_output=True)
 
 
 def delete_git_repo(app_name: str) -> None:

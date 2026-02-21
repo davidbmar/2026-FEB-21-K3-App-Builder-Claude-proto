@@ -34,9 +34,15 @@ EOF
 echo "=== Restarting k3s to pick up registry config ==="
 sudo systemctl restart k3s
 
+# After restart, k3s.yaml is reset to root-only; re-apply readable perms.
+# (On fresh installs done via install-k3s.sh the --write-kubeconfig-mode flag
+#  handles this automatically; here we cover the restart case.)
+sleep 5
+sudo chmod 0644 /etc/rancher/k3s/k3s.yaml
+
 echo "=== Waiting for k3s to be ready again ==="
 until kubectl get nodes 2>/dev/null | grep -q " Ready"; do
-  echo "Waiting..."
+  echo "  waiting..."
   sleep 5
 done
 

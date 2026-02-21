@@ -296,12 +296,15 @@ async def rollback_app(name: str):
     app_entry = _get_app(name)
     rollback_version = app_entry.get("rollback_version")
 
-    if rollback_version:
-        k8s_ops.set_image(name, "prod", rollback_version)
-        ok = k8s_ops.rollout_status(name, "prod")
-    else:
-        k8s_ops.rollout_undo(name, "prod")
-        ok = k8s_ops.rollout_status(name, "prod")
+    try:
+        if rollback_version:
+            k8s_ops.set_image(name, "prod", rollback_version)
+            ok = k8s_ops.rollout_status(name, "prod")
+        else:
+            k8s_ops.rollout_undo(name, "prod")
+            ok = k8s_ops.rollout_status(name, "prod")
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     registry = _load_registry()
     if ok and rollback_version:
