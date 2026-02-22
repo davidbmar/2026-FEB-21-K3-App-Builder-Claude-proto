@@ -69,7 +69,8 @@ def _get_app(name: str) -> dict:
 
 def _app_url(app_name: str, env: str) -> str:
     suffix = "-preview" if env == "preview" else ""
-    return f"http://{app_name}{suffix}.{SERVER_IP}.nip.io/"
+    ip_dashes = SERVER_IP.replace(".", "-")
+    return f"http://{app_name}{suffix}.{ip_dashes}.nip.io/"
 
 
 # ---------------------------------------------------------------------------

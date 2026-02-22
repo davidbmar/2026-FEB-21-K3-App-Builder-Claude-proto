@@ -78,7 +78,7 @@ metadata:
     traefik.ingress.kubernetes.io/router.entrypoints: web
 spec:
   rules:
-  - host: "{{ app_name }}{% if env == 'preview' %}-preview{% endif %}.{{ server_ip }}.nip.io"
+  - host: "{{ app_name }}{% if env == 'preview' %}-preview{% endif %}.{{ server_ip | replace('.', '-') }}.nip.io"
     http:
       paths:
       - path: /
