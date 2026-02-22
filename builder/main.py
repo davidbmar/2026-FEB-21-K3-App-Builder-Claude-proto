@@ -14,9 +14,16 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+import concurrent.futures
+
 import build_ops
 import claude_ops
 import k8s_ops
+
+# Module-level executor — avoids blocking the event loop on client disconnect.
+# Using with-block ThreadPoolExecutor would call shutdown(wait=True) if the
+# async generator is cancelled (client disconnect), freezing the event loop.
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -68,6 +75,13 @@ def _app_url(app_name: str, env: str) -> str:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.get("/about", response_class=HTMLResponse)
+async def about(request: Request):
+    return templates.TemplateResponse(
+        "about.html", {"request": request, "server_ip": SERVER_IP}
+    )
+
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -163,44 +177,40 @@ async def generate_code(name: str, description: str = Form(...)):
     async def event_stream() -> AsyncGenerator[str, None]:
         full_text = ""
         loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
 
-        # Run blocking stream in thread pool
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            queue: asyncio.Queue = asyncio.Queue()
+        def run_stream():
+            try:
+                full = ""
+                for chunk in claude_ops.generate_code_stream(
+                    name, template, description, current_files
+                ):
+                    full += chunk
+                    asyncio.run_coroutine_threadsafe(queue.put(("chunk", chunk)), loop)
+                # Write files in the thread so it survives client disconnect
+                files = claude_ops._extract_files(full)
+                if files:
+                    build_ops.write_files_to_workspace(name, files)
+                asyncio.run_coroutine_threadsafe(
+                    queue.put(("done", list(files.keys()))), loop)
+            except Exception as e:
+                asyncio.run_coroutine_threadsafe(queue.put(("error", str(e))), loop)
 
-            def run_stream():
-                try:
-                    full = ""
-                    for chunk in claude_ops.generate_code_stream(
-                        name, template, description, current_files
-                    ):
-                        full += chunk
-                        asyncio.run_coroutine_threadsafe(queue.put(("chunk", chunk)), loop)
-                    # Write files in the thread so it survives client disconnect
-                    files = claude_ops._extract_files(full)
-                    if files:
-                        build_ops.write_files_to_workspace(name, files)
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(("done", list(files.keys()))), loop)
-                except Exception as e:
-                    asyncio.run_coroutine_threadsafe(queue.put(("error", str(e))), loop)
+        _executor.submit(run_stream)
 
-            pool.submit(run_stream)
-
-            while True:
-                event_type, data = await queue.get()
-                if event_type == "chunk":
-                    full_text += data
-                    escaped = data.replace("\n", "\\n").replace("\r", "\\r")
-                    yield f"data: {json.dumps({'chunk': escaped})}\n\n"
-                elif event_type == "done":
-                    # files already extracted and written in the thread
-                    yield f"data: {json.dumps({'done': True, 'files': data or []})}\n\n"
-                    break
-                elif event_type == "error":
-                    yield f"data: {json.dumps({'error': data})}\n\n"
-                    break
+        while True:
+            event_type, data = await queue.get()
+            if event_type == "chunk":
+                full_text += data
+                escaped = data.replace("\n", "\\n").replace("\r", "\\r")
+                yield f"data: {json.dumps({'chunk': escaped})}\n\n"
+            elif event_type == "done":
+                # files already extracted and written in the thread
+                yield f"data: {json.dumps({'done': True, 'files': data or []})}\n\n"
+                break
+            elif event_type == "error":
+                yield f"data: {json.dumps({'error': data})}\n\n"
+                break
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -213,8 +223,6 @@ async def build_app(name: str):
 
     async def event_stream() -> AsyncGenerator[str, None]:
         loop = asyncio.get_event_loop()
-        import concurrent.futures
-
         queue: asyncio.Queue = asyncio.Queue()
 
         def run_build():
@@ -238,20 +246,19 @@ async def build_app(name: str):
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(queue.put(("error", str(e))), loop)
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            pool.submit(run_build)
+        _executor.submit(run_build)
 
-            while True:
-                event_type, data = await queue.get()
-                if event_type == "log":
-                    yield f"data: {json.dumps({'log': data})}\n\n"
-                elif event_type == "done":
-                    preview_url = _app_url(name, "preview")
-                    yield f"data: {json.dumps({'done': True, 'version': data, 'preview_url': preview_url})}\n\n"
-                    break
-                elif event_type == "error":
-                    yield f"data: {json.dumps({'error': data})}\n\n"
-                    break
+        while True:
+            event_type, data = await queue.get()
+            if event_type == "log":
+                yield f"data: {json.dumps({'log': data})}\n\n"
+            elif event_type == "done":
+                preview_url = _app_url(name, "preview")
+                yield f"data: {json.dumps({'done': True, 'version': data, 'preview_url': preview_url})}\n\n"
+                break
+            elif event_type == "error":
+                yield f"data: {json.dumps({'error': data})}\n\n"
+                break
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -322,8 +329,6 @@ async def app_logs(name: str, env: str = "preview"):
 
     async def event_stream() -> AsyncGenerator[str, None]:
         loop = asyncio.get_event_loop()
-        import concurrent.futures
-
         queue: asyncio.Queue = asyncio.Queue()
 
         def stream_logs():
@@ -333,11 +338,10 @@ async def app_logs(name: str, env: str = "preview"):
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(queue.put(f"ERROR: {e}\n"), loop)
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            pool.submit(stream_logs)
-            while True:
-                line = await asyncio.wait_for(queue.get(), timeout=30)
-                yield f"data: {json.dumps({'log': line})}\n\n"
+        _executor.submit(stream_logs)
+        while True:
+            line = await asyncio.wait_for(queue.get(), timeout=30)
+            yield f"data: {json.dumps({'log': line})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

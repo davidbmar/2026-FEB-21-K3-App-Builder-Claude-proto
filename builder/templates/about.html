@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+{% block title %}How It Works — k3s App Builder{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>How It Works</h1>
+</div>
+
+<div class="about-grid">
+
+  <!-- ── Left column ── -->
+  <div class="about-main">
+
+    <section class="panel">
+      <h2 class="panel-title">The Physical Machine</h2>
+      <p>Everything runs on <strong>one EC2 instance</strong>. There is no separate database server, no external load balancer, nothing you pay for beyond the instance itself. The builder UI, every user app, the traffic routing, and the container registry all run on this single machine.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Docker vs k3s</h2>
+      <p><strong>Docker</strong> (running directly on the host) is used only for <em>building</em> images. When you click Build, the builder runs <code>docker build</code> on the host, which reads the Dockerfile Claude generated, packages the app into a container image, and pushes it to the local registry at <code>localhost:5050</code>.</p>
+      <p style="margin-top:0.75rem"><strong>k3s</strong> is a lightweight Kubernetes distribution. It <em>runs</em> the containers that Docker built. Think of Docker as the factory that makes container images, and k3s as the runtime that keeps them alive. k3s also handles networking, restarts crashed containers, and enforces resource limits.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Traffic Flow</h2>
+      <pre class="about-code">Your Browser
+  → DNS:  myapp.{{ server_ip }}.nip.io  resolves to  {{ server_ip }}
+  → TCP connect to EC2 port 80
+  → Traefik reads Host header, matches Ingress rule
+  → Forwards to myapp-prod-svc (cluster-internal Service)
+  → Service routes to pod (10.42.0.x:8080)
+  → Pod's process (uvicorn / nginx) handles request
+  ← Response travels back the same path</pre>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">nip.io — Free DNS Without a Domain</h2>
+      <p><code>nip.io</code> is a public DNS service with one rule: any hostname of the form <code>anything.1.2.3.4.nip.io</code> resolves to <code>1.2.3.4</code>. When your browser looks up <code>builder.{{ server_ip }}.nip.io</code>, it gets back <code>{{ server_ip }}</code>. The actual routing to the right app happens on the server via Traefik, not in DNS.</p>
+      <p style="margin-top:0.75rem">When you acquire a real domain later, update the Traefik Ingress hostnames from <code>*.{{ server_ip }}.nip.io</code> to <code>*.yourdomain.com</code> — no other changes needed.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Traefik — The Traffic Router</h2>
+      <p>Traefik binds to ports 80 and 443 on the host. Every HTTP request hits Traefik first. It reads <code>Ingress</code> objects in Kubernetes to know where to forward each request:</p>
+      <pre class="about-code">builder.{{ server_ip }}.nip.io         →  builder-ui-svc:8000   (builder-system)
+myapp.{{ server_ip }}.nip.io            →  myapp-prod-svc:8080    (app-myapp)
+myapp-preview.{{ server_ip }}.nip.io    →  myapp-preview-svc:8080 (app-myapp)</pre>
+      <p style="margin-top:0.75rem">No request ever touches another app. Traefik routes purely on the <code>Host</code> header.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Namespaces — Isolation Boundaries</h2>
+      <p>Kubernetes namespaces are like separate rooms. Resources in one namespace cannot see or talk to resources in another namespace.</p>
+      <pre class="about-code">kube-system       ← Traefik, CoreDNS, k3s internals
+builder-system    ← Builder UI, local registry, builder service account
+app-hello-world   ← Everything for the hello-world app
+app-myapp         ← Everything for myapp
+app-otherapp      ← Everything for otherapp</pre>
+      <p style="margin-top:0.75rem">When you create a new app, the builder automatically creates a new namespace with a ResourceQuota and NetworkPolicy already applied.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Each App: What's Actually Running</h2>
+      <p>For an app called <code>myapp</code>, k3s creates these objects in the <code>app-myapp</code> namespace:</p>
+      <pre class="about-code">app-myapp namespace
+├── Deployment: myapp-preview  →  Pod → Container (image: myapp:timestamp)
+├── Deployment: myapp-prod     →  Pod → Container (image: myapp:timestamp)
+├── Service:    myapp-preview-svc   (stable internal address → pod)
+├── Service:    myapp-prod-svc      (stable internal address → pod)
+├── Ingress:    myapp-preview       myapp-preview.{{ server_ip }}.nip.io
+├── Ingress:    myapp-prod          myapp.{{ server_ip }}.nip.io
+├── ResourceQuota                   max 1 CPU, 512 MB RAM, 6 pods
+└── NetworkPolicy                   blocks cross-namespace traffic</pre>
+      <p style="margin-top:0.75rem">Each pod is a fully isolated container: its own process, its own filesystem, its own network interface. It cannot see other apps' files or network traffic.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Preview vs Production</h2>
+      <p><strong>Build</strong> creates a new versioned image (<code>myapp:20260221.143022</code>) and deploys it to the <em>preview</em> environment only. Production keeps running the old version untouched.</p>
+      <p style="margin-top:0.75rem"><strong>Publish</strong> updates production to run the same image that preview is running. k3s does a rolling update: starts the new pod, waits for it to be healthy, then terminates the old one.</p>
+      <p style="margin-top:0.75rem"><strong>Rollback</strong> reverts production to the previous image tag. The old image is still in the local registry so this is near-instantaneous.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">ResourceQuota — Preventing Runaway Apps</h2>
+      <p>Each app namespace is capped at:</p>
+      <pre class="about-code">CPU request:    500m   (half a core)
+CPU limit:      1000m  (one full core)
+Memory request: 256 MB
+Memory limit:   512 MB
+Max pods:       6</pre>
+      <p style="margin-top:0.75rem">If a container exceeds its memory limit, the kernel kills it and k3s restarts it automatically. This prevents one bad app from starving every other app on the machine.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">NetworkPolicy — App Isolation</h2>
+      <p>Each app namespace has a policy that:</p>
+      <ul class="about-list">
+        <li><strong>Allows inbound</strong> only from pods in the same namespace and from <code>kube-system</code> (so Traefik can route to it)</li>
+        <li><strong>Allows all outbound</strong> so apps can call external APIs, databases, etc.</li>
+      </ul>
+      <p style="margin-top:0.75rem">Apps cannot make direct HTTP requests to other apps on the same cluster, even if they know the internal IP.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">The Local Registry</h2>
+      <p>A Docker registry (<code>registry:2</code>) runs as a container inside k3s. It stores every image ever built at <code>/var/lib/registry</code> on the EC2 disk.</p>
+      <pre class="about-code">Build time:  docker build → docker push localhost:5050/myapp:v1
+Run time:    k3s pulls localhost:5050/myapp:v1 → starts container
+Rollback:    k3s pulls localhost:5050/myapp:v0 → old version running again</pre>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">The Builder UI Itself</h2>
+      <p>The Builder UI is itself a container running in k3s (<code>builder-system</code> namespace). It is a FastAPI Python app that:</p>
+      <ul class="about-list">
+        <li>Calls the <strong>Anthropic API</strong> to stream Claude-generated code</li>
+        <li>Runs <code>docker build</code> via the Docker socket mounted from the host</li>
+        <li>Runs <code>kubectl</code> using its ServiceAccount token (automatically mounted by k3s)</li>
+        <li>Writes code to <code>/var/git/apps/&lt;name&gt;-workspace/</code> and commits to a bare git repo</li>
+        <li>Tracks app state in <code>/opt/builder/registry.json</code></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Git Repos</h2>
+      <p>Every app has a bare git repo at <code>/var/git/apps/myapp.git</code> and a working checkout at <code>/var/git/apps/myapp-workspace/</code>. Every code generation creates a commit, giving you a full history of what Claude generated. The workspace directory is what <code>docker build</code> uses as its build context.</p>
+    </section>
+
+  </div>
+
+  <!-- ── Right column (quick-ref cards) ── -->
+  <div class="about-side">
+
+    <section class="panel">
+      <h2 class="panel-title">This Server</h2>
+      <div class="stat-grid">
+        <div class="stat-item">
+          <span class="stat-label">Public IP</span>
+          <span class="stat-value">{{ server_ip }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Builder URL</span>
+          <a href="http://builder.{{ server_ip }}.nip.io/" class="stat-value url-link" target="_blank">builder.{{ server_ip }}.nip.io</a>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Registry</span>
+          <span class="stat-value">localhost:5050</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Memory Budget</h2>
+      <table class="about-table">
+        <tr><td>k3s + Traefik</td><td class="num">~400 MB</td></tr>
+        <tr><td>Builder UI pod</td><td class="num">~100 MB</td></tr>
+        <tr><td>Registry pod</td><td class="num">~50 MB</td></tr>
+        <tr><td>Host OS + Docker</td><td class="num">~300 MB</td></tr>
+        <tr class="table-sep"><td><strong>Infrastructure</strong></td><td class="num"><strong>~850 MB</strong></td></tr>
+        <tr><td>Per app env (limit)</td><td class="num">128 MB</td></tr>
+        <tr><td>10 app environments</td><td class="num">~1.3 GB</td></tr>
+        <tr class="table-sep"><td><strong>Total (10 envs)</strong></td><td class="num"><strong>~2.15 GB</strong></td></tr>
+        <tr><td><strong>Headroom (7.6 GB)</strong></td><td class="num"><strong>~5.4 GB</strong></td></tr>
+      </table>
+      <p class="about-note">⚠️ Claude Code CLI uses ~900 MB per session. Budget ~1 GB per concurrent interactive session.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">App Templates</h2>
+      <table class="about-table">
+        <tr><td><code>simple-api</code></td><td>FastAPI REST API</td></tr>
+        <tr><td><code>static-site</code></td><td>nginx HTML/CSS/JS</td></tr>
+        <tr><td><code>webhook</code></td><td>FastAPI + HMAC auth</td></tr>
+        <tr><td><code>scheduled-job</code></td><td>Python CronJob</td></tr>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Per-App Limits</h2>
+      <table class="about-table">
+        <tr><td>CPU request</td><td class="num">500m</td></tr>
+        <tr><td>CPU limit</td><td class="num">1000m</td></tr>
+        <tr><td>Memory request</td><td class="num">256 MB</td></tr>
+        <tr><td>Memory limit</td><td class="num">512 MB</td></tr>
+        <tr><td>Max pods</td><td class="num">6</td></tr>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Builder Permissions</h2>
+      <p class="about-note">The Builder UI runs as <code>builder-controller</code> ServiceAccount. It can:</p>
+      <ul class="about-list">
+        <li>Create / delete <code>app-*</code> namespaces</li>
+        <li>Manage Deployments, Services, Ingresses in <code>app-*</code></li>
+        <li>Read all namespaces (to list apps)</li>
+      </ul>
+      <p class="about-note" style="margin-top:0.75rem">It cannot touch <code>kube-system</code>, cannot exec into pods, and cannot modify <code>builder-system</code> itself.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">Setup Sequence</h2>
+      <ol class="about-steps">
+        <li>Clone repo</li>
+        <li><code>install-k3s.sh</code></li>
+        <li><code>setup-registry.sh</code></li>
+        <li><code>export ANTHROPIC_API_KEY=...</code></li>
+        <li><code>bootstrap-cluster.sh</code></li>
+        <li>Open builder in browser ✓</li>
+      </ol>
+    </section>
+
+  </div>
+</div>
+
+<style>
+.about-grid {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 0 1.5rem;
+  align-items: start;
+}
+@media (max-width: 1000px) { .about-grid { grid-template-columns: 1fr; } }
+
+.about-code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+  margin-top: 0.75rem;
+}
+
+.about-list {
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.about-note {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.about-table {
+  width: 100%;
+  font-size: 0.82rem;
+  border-collapse: collapse;
+}
+.about-table td {
+  padding: 0.35rem 0.25rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.about-table td.num {
+  text-align: right;
+  font-family: var(--mono);
+  color: var(--primary);
+  white-space: nowrap;
+}
+.about-table tr.table-sep td {
+  border-top: 2px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.stat-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+.stat-item { display: flex; flex-direction: column; gap: 0.15rem; }
+.stat-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-value { font-family: var(--mono); font-size: 0.85rem; color: var(--text); }
+
+.about-steps {
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--text);
+}
+.about-steps li code { font-size: 0.78rem; }
+
+.panel p { font-size: 0.875rem; color: var(--text); line-height: 1.65; }
+</style>
+{% endblock %}
